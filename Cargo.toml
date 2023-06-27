@@ -1,0 +1,12 @@
+[package]
+name = "wtf-k8s-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing-subscriber = "0.3"
+tracing = "0.1"
+color-eyre = "0.6"
+kube = "0.83"
+k8s-openapi = { version = "0.18", features = ["v1_26"] }
