@@ -6,6 +6,10 @@ use kube::{api::Api, core::ObjectMeta, Client};
 use tracing::info;
 
 mod health;
+mod scope;
+
+// idea have a scope tracker that updates health bits for a scope on events related to pods within
+// that scope
 
 fn main() -> Result<(), Report> {
     color_eyre::install()?;
@@ -23,9 +27,10 @@ fn main() -> Result<(), Report> {
         let _pods = pods.list(&Default::default()).await?;
 
         for p in _pods.items {
-        let res = health::get_health_bits(&pods, &p.metadata.name.unwrap()).await;
+        //let res = health::get_health_bits(&pods, &p.metadata.name.unwrap()).await;
+        let res = health::query_pod_logs(&pods, &p.metadata.name.unwrap()).await;
         match res {
-        Ok(v) => println!("{}",v), 
+        Ok(_) => (), 
         Err(e) => println!("{}", e),
         }
         }
