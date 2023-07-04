@@ -5,39 +5,8 @@ use k8s_openapi::api::core::v1::{Event, Pod, PodStatus};
 use kube::{api::Api, core::ObjectMeta, Client};
 use tracing::info;
 
-enum SimplePodStatus {
-    Pending, 
-    Running,
-    Succeeded,
-    Failed,
-    Unknown
-}
-impl fmt::Display for SimplePodStatus  {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            match self {
-                SimplePodStatus::Pending =>  write!(f, "Pending"),
-                SimplePodStatus::Succeeded =>  write!(f, "Succeeded"),
-                SimplePodStatus::Running =>  write!(f, "Running"),
-                SimplePodStatus::Failed =>  write!(f, "Failed"),
-                SimplePodStatus::Unknown =>  write!(f, "Unknown"),
-            }
-        }
-}
+mod health;
 
-async fn get_pod_status(pods: &Api<Pod>, pod_name: &String) -> Result<SimplePodStatus, String> {
-    let pod_status_str = match pods.get_status(pod_name).await {
-        Ok(it) => it,
-        Err(e) => return Err(format!("{} {}", "pod not found".to_string(), e)),
-    }.status.unwrap().phase.unwrap();
-    match pod_status_str.as_ref() {
-        "Succeeded" => Ok(SimplePodStatus::Succeeded),
-        "Failed" => Ok(SimplePodStatus::Failed),
-        "Running" => Ok(SimplePodStatus::Running),
-        "Pending" => Ok(SimplePodStatus::Pending),
-        "Unknown" => Ok(SimplePodStatus::Unknown),
-        e => Err(format!("unknown status: {}",e)),
-    }
-}
 fn main() -> Result<(), Report> {
     color_eyre::install()?;
     tracing_subscriber::fmt::init();
@@ -54,7 +23,7 @@ fn main() -> Result<(), Report> {
         let _pods = pods.list(&Default::default()).await?;
 
         for p in _pods.items {
-        let res = get_pod_status(&pods, &p.metadata.name.unwrap()).await;
+        let res = health::get_health_bits(&pods, &p.metadata.name.unwrap()).await;
         match res {
         Ok(v) => println!("{}",v), 
         Err(e) => println!("{}", e),
