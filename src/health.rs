@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use k8s_openapi::api::{apps::v1::ReplicaSet, core::v1::Pod};
+use k8s_openapi::api::{apps::v1::{ReplicaSet, Deployment}, core::v1::Pod};
 use kube::api::{Api, LogParams};
 use std::fmt;
 
@@ -81,6 +81,22 @@ impl QueryableResource for ReplicaSet {
                     Ok(HealthBit::Green)
                 } else {
                     Ok(HealthBit::Red)
+                }
+            }
+            None => Err("no status!".to_string()),
+        }
+    }
+}
+
+#[async_trait]
+impl QueryableResource for Deployment {
+    async fn get_health_bit(&self) -> Result<HealthBit, String> {
+        match self.status.clone() {
+            Some(status) => {
+                if status.unavailable_replicas.or(Some(0)) > Some(0) {
+                    Ok(HealthBit::Red)
+                } else {
+                    Ok(HealthBit::Green)
                 }
             }
             None => Err("no status!".to_string()),
