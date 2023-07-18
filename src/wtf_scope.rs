@@ -14,6 +14,22 @@ use tracing::info;
 
 use crate::health::{ QueryableResource, query_pod_logs, HealthBit};
 
+#[derive(Clone)]
+enum ResourceType {
+    Pod, 
+    Deployment,
+    ReplicaSet,
+}
+
+impl fmt::Display for ResourceType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ResourceType::Pod => write!(f, "Pod"),
+            ResourceType::Deployment => write!(f, "Deployment"),
+            ResourceType::ReplicaSet => write!(f, "ReplicaSet"),
+        }
+    }
+}
 // TODO should a scope encompass generic resources, rather than just pods?
 // A scope of pods within a namespace, and a cache of their health bits.
 pub struct WtfScope {
@@ -29,6 +45,7 @@ pub struct WtfScope {
 struct ResourceStatus {
     // TODO maybe we can have a history or something here
     health_bit: HealthBit,
+    object_type: ResourceType,
 }
 
 impl fmt::Display for WtfScope {
@@ -36,7 +53,7 @@ impl fmt::Display for WtfScope {
         let mut s = String::new();
         for (object, status) in self.objects.clone() {
             s.push_str(
-                &format!("object '{}' has health bit {}", object, status.health_bit).to_string(),
+                &format!("object '{}' of type {} has health bit {}", object, status.object_type, status.health_bit).to_string(),
             );
             s.push('\n');
         }
@@ -97,7 +114,8 @@ impl WtfScope {
                     name,
                     ResourceStatus {
                         health_bit: pod.get_health_bit().await?,
-                    },
+                        object_type: ResourceType::Pod,
+                    }
                 ),
                 None => return Err("pod has no name!".to_string()),
             };
@@ -113,6 +131,7 @@ impl WtfScope {
                     name,
                     ResourceStatus {
                         health_bit: rset.get_health_bit().await?,
+                        object_type: ResourceType::ReplicaSet,
                     },
                 ),
                 None => return Err("pod has no name!".to_string()),
