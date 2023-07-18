@@ -138,6 +138,23 @@ impl WtfScope {
             };
         }
 
+        let replica_sets = match self.deployment_api.list(&Default::default()).await {
+            Ok(p) => p.into_iter(),
+            Err(_) => Vec::<Deployment>::new().into_iter(),
+        };
+        for rset in replica_sets {
+            match rset.metadata.name.clone() {
+                Some(name) => self.objects.insert(
+                    name,
+                    ResourceStatus {
+                        health_bit: rset.get_health_bit().await?,
+                        object_type: ResourceType::Deployment,
+                    },
+                ),
+                None => return Err("pod has no name!".to_string()),
+            };
+        }
+
         Ok(())
     }
 
