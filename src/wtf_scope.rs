@@ -1,18 +1,18 @@
-use k8s_openapi::{Resource, Metadata};
+use k8s_openapi::{Metadata, Resource};
 use pin_utils::pin_mut;
 use std::fmt;
 
 use std::{borrow::BorrowMut, collections::HashMap};
 
 use futures::stream::TryStreamExt;
-use k8s_openapi::api::core::v1::{Event, Pod, ReadServiceResponse, Node};
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
+use k8s_openapi::api::core::v1::{Event, Node, Pod, ReadServiceResponse};
 use kube::runtime::{watcher, WatchStreamExt};
 use kube::Api;
 use kube::Client;
 use tracing::info;
 
-use crate::health::{get_health_bit, query_pod_logs, HealthBit};
+use crate::health::{ QueryableResource, query_pod_logs, HealthBit};
 
 // TODO should a scope encompass generic resources, rather than just pods?
 // A scope of pods within a namespace, and a cache of their health bits.
@@ -21,28 +21,25 @@ pub struct WtfScope {
     pod_api: Api<Pod>,
     //node_api: Api<Node>,
     deployment_api: Api<Deployment>,
-    replica_pod_api: Api<ReplicaSet>,
+    replica_set_api: Api<ReplicaSet>,
     client: Client,
-} 
+}
 
 #[derive(Clone)]
 struct ResourceStatus {
+    // TODO maybe we can have a history or something here
     health_bit: HealthBit,
 }
 
 impl fmt::Display for WtfScope {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut s = String::new();
-            for (object, status) in self.objects.clone() {
-                s.push_str(
-                    &format!(
-                        "object '{}' has health bit {}",
-                        object, status.health_bit
-                    )
-                    .to_string(),
-                );
-                s.push('\n');
-            }
+        for (object, status) in self.objects.clone() {
+            s.push_str(
+                &format!("object '{}' has health bit {}", object, status.health_bit).to_string(),
+            );
+            s.push('\n');
+        }
         write!(f, "{}", s)
     }
 }
@@ -55,7 +52,7 @@ impl WtfScope {
         Self {
             pod_api: Api::default_namespaced(client.clone()),
             // node_api: Api::default_namespaced(client.clone()),
-            replica_pod_api: Api::default_namespaced(client.clone()),
+            replica_set_api: Api::default_namespaced(client.clone()),
             deployment_api: Api::default_namespaced(client.clone()),
             objects: HashMap::new(),
             client,
@@ -71,6 +68,9 @@ impl WtfScope {
         Ok(())
     }
 
+    // Update the cache of pod statuses within this scope.
+    // TODO this should be called on an event-watch loop and maybe either update a pod or its
+    // entire scope when an event (perhaps meeting some conditions) mentions a pod.
     pub async fn monitor() -> anyhow::Result<()> {
         //tracing_subscriber::fmt::init();
         let client = Client::try_default().await?;
@@ -85,58 +85,52 @@ impl WtfScope {
         Ok(())
     }
 
-    pub async fn update_scope(&mut self) {
-    }
-
-    // Update the cache of pod statuses within this scope.
-    // TODO this should be called on an event-watch loop and maybe either update a pod or its
-    // entire scope when an event (perhaps meeting some conditions) mentions a pod.
     pub async fn populate_objects(&mut self) -> Result<(), String> {
-
+        // TODO cleaner
         let pods = match self.pod_api.list(&Default::default()).await {
             Ok(p) => p.into_iter(),
             Err(_) => Vec::<Pod>::new().into_iter(),
         };
         for pod in pods {
             match pod.metadata.name.clone() {
-                Some(name) => {
-                    self.objects.insert(name, ResourceStatus {health_bit: get_health_bit(&pod).await?})
-                },
-                None => return Err("pod has no name!".to_string())
+                Some(name) => self.objects.insert(
+                    name,
+                    ResourceStatus {
+                        health_bit: pod.get_health_bit().await?,
+                    },
+                ),
+                None => return Err("pod has no name!".to_string()),
             };
         }
+
+        let replica_sets = match self.replica_set_api.list(&Default::default()).await {
+            Ok(p) => p.into_iter(),
+            Err(_) => Vec::<ReplicaSet>::new().into_iter(),
+        };
+        for rset in replica_sets {
+            match rset.metadata.name.clone() {
+                Some(name) => self.objects.insert(
+                    name,
+                    ResourceStatus {
+                        health_bit: rset.get_health_bit().await?,
+                    },
+                ),
+                None => return Err("pod has no name!".to_string()),
+            };
+        }
+
         Ok(())
     }
 
-
-    /*
-    // Query the state of a pod within this scope. If `update` is false, return the cached status.
-    // Otherwise, query the state using the API.
-    pub async fn query_pod(
+    // Query the state of an object within this scope.
+    // This result may be stale, and is likely to be so if the event watch loop is not running.
+    pub async fn get_object_health_bit(
         &mut self,
-        pod_name: &String,
-        update: Option<bool>,
+        object_name: &String,
     ) -> Result<HealthBit, String> {
-        match self.pods.get(pod_name).borrow_mut() {
-            Some(pod) => {
-                match get_health_bit(&self.namespace, &pod_name).await {
-                    Ok(bit) => {
-                        match update.unwrap_or(false) {
-                            true => {
-                                *pod = &bit.to_owned();
-                            }
-                            false => (),
-                        };
-                        Ok(bit)
-                    }
-                    Err(e) => Err(e),
-                }
-
-                // TODO just derive copy trait?
-                // TODO prob don't use unwrap even though it's safe here (bc match on contains_key)
-            }
-            None => Err("Pod not found within scope!".to_string()),
+        match self.objects.get(object_name) {
+            Some(status) => Ok(status.health_bit),
+            None => Err("Object  not found!".to_string()),
         }
     }
-    */
 }

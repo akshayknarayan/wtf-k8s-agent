@@ -1,4 +1,5 @@
-use k8s_openapi::api::core::v1::Pod;
+use async_trait::async_trait;
+use k8s_openapi::api::{apps::v1::ReplicaSet, core::v1::Pod};
 use kube::api::{Api, LogParams};
 use std::fmt;
 
@@ -16,6 +17,11 @@ enum SimplePodStatus {
     Succeeded,
     Failed,
     Unknown,
+}
+
+#[async_trait]
+pub trait QueryableResource {
+    async fn get_health_bit(&self) -> Result<HealthBit, String>;
 }
 
 impl fmt::Display for HealthBit {
@@ -41,19 +47,6 @@ impl fmt::Display for SimplePodStatus {
     }
 }
 
-// Get and map a pod's status to a health bit.
-// TODO this function should porbably map podstatus-> healthbit and
-// we'll have overloads (mapping other enums to healthbits) for other health metrics.
-pub async fn get_health_bit(pod: &Pod) -> Result<HealthBit, String> {
-    match get_pod_status(pod).await? {
-        SimplePodStatus::Succeeded => Ok(HealthBit::Green),
-        SimplePodStatus::Running => Ok(HealthBit::Green),
-        SimplePodStatus::Failed => Ok(HealthBit::Red),
-        SimplePodStatus::Pending => Ok(HealthBit::Yellow),
-        SimplePodStatus::Unknown => Ok(HealthBit::Red),
-    }
-}
-
 // TODO regex these, maybe to determine ERRORs?
 pub async fn query_pod_logs(pods: &Api<Pod>, pod_name: &String) -> Result<(), String> {
     println!(
@@ -63,8 +56,41 @@ pub async fn query_pod_logs(pods: &Api<Pod>, pod_name: &String) -> Result<(), St
     Ok(())
 }
 
+// Get and map a pod's status to a health bit.
+// TODO this function should porbably map podstatus-> healthbit and
+// we'll have overloads (mapping other enums to healthbits) for other health metrics.
+#[async_trait]
+impl QueryableResource for Pod {
+    async fn get_health_bit(&self) -> Result<HealthBit, String> {
+        match get_pod_status(self).await? {
+            SimplePodStatus::Succeeded => Ok(HealthBit::Green),
+            SimplePodStatus::Running => Ok(HealthBit::Green),
+            SimplePodStatus::Failed => Ok(HealthBit::Red),
+            SimplePodStatus::Pending => Ok(HealthBit::Yellow),
+            SimplePodStatus::Unknown => Ok(HealthBit::Red),
+        }
+    }
+}
+
+#[async_trait]
+impl QueryableResource for ReplicaSet {
+    async fn get_health_bit(&self) -> Result<HealthBit, String> {
+        match self.status.clone() {
+            Some(status) => {
+                if status.ready_replicas.or(Some(0)) == Some(status.replicas) {
+                    Ok(HealthBit::Green)
+                } else {
+                    Ok(HealthBit::Red)
+                }
+            }
+            None => Err("no status!".to_string()),
+        }
+    }
+}
+
 // Query kubes API to get the string status of a pod, and map it to a SimplePodStatus enum.
 async fn get_pod_status(pod: &Pod) -> Result<SimplePodStatus, String> {
+    // TODO unwrap is bad
     match pod.status.clone().unwrap().phase.unwrap().as_ref() {
         "Succeeded" => Ok(SimplePodStatus::Succeeded),
         "Failed" => Ok(SimplePodStatus::Failed),

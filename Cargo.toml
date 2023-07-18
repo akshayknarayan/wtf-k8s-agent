@@ -14,3 +14,4 @@ tracing = "0.1"
 color-eyre = "0.6"
 kube = { version = "0.83", features = ["runtime"] } 
 k8s-openapi = { version = "0.18", features = ["v1_26"] }
+async-trait = "0.1.71"
