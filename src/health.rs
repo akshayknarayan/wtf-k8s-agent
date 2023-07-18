@@ -1,4 +1,4 @@
-use k8s_openapi::api::core::v1::{Event, Pod, PodStatus};
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, LogParams};
 use std::fmt;
 
@@ -44,8 +44,8 @@ impl fmt::Display for SimplePodStatus {
 // Get and map a pod's status to a health bit.
 // TODO this function should porbably map podstatus-> healthbit and
 // we'll have overloads (mapping other enums to healthbits) for other health metrics.
-pub async fn get_health_bit(pods: &Api<Pod>, pod_name: &String) -> Result<HealthBit, String> {
-    match get_pod_status(pods, pod_name).await? {
+pub async fn get_health_bit(pod: &Pod) -> Result<HealthBit, String> {
+    match get_pod_status(pod).await? {
         SimplePodStatus::Succeeded => Ok(HealthBit::Green),
         SimplePodStatus::Running => Ok(HealthBit::Green),
         SimplePodStatus::Failed => Ok(HealthBit::Red),
@@ -64,19 +64,8 @@ pub async fn query_pod_logs(pods: &Api<Pod>, pod_name: &String) -> Result<(), St
 }
 
 // Query kubes API to get the string status of a pod, and map it to a SimplePodStatus enum.
-async fn get_pod_status(
-    pod_namespace: &Api<Pod>,
-    pod_name: &String,
-) -> Result<SimplePodStatus, String> {
-    let pod_status_str = match pod_namespace.get_status(pod_name).await {
-        Ok(it) => it,
-        Err(e) => return Err(format!("{} {}", "pod not found".to_string(), e)),
-    }
-    .status
-    .unwrap()
-    .phase
-    .unwrap();
-    match pod_status_str.as_ref() {
+async fn get_pod_status(pod: &Pod) -> Result<SimplePodStatus, String> {
+    match pod.status.clone().unwrap().phase.unwrap().as_ref() {
         "Succeeded" => Ok(SimplePodStatus::Succeeded),
         "Failed" => Ok(SimplePodStatus::Failed),
         "Running" => Ok(SimplePodStatus::Running),

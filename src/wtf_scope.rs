@@ -19,12 +19,13 @@ use crate::health::{get_health_bit, query_pod_logs, HealthBit};
 pub struct WtfScope {
     objects: HashMap<String, ResourceStatus>,
     pod_api: Api<Pod>,
-    node_api: Api<Node>,
+    //node_api: Api<Node>,
     deployment_api: Api<Deployment>,
     replica_pod_api: Api<ReplicaSet>,
-    namespace: Option<String>
+    client: Client,
 } 
 
+#[derive(Clone)]
 struct ResourceStatus {
     health_bit: HealthBit,
 }
@@ -32,18 +33,16 @@ struct ResourceStatus {
 impl fmt::Display for WtfScope {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut s = String::new();
-        for (deployment, pods) in self.deployments {
-            for (pod_name, value) in pods.pods.clone() {
+            for (object, status) in self.objects.clone() {
                 s.push_str(
                     &format!(
-                        "deployment {} pod '{}' has status {}",
-                        deployment, pod_name, value
+                        "object '{}' has health bit {}",
+                        object, status.health_bit
                     )
                     .to_string(),
                 );
                 s.push('\n');
             }
-        }
         write!(f, "{}", s)
     }
 }
@@ -55,10 +54,11 @@ impl WtfScope {
     pub fn new(client: Client) -> Self {
         Self {
             pod_api: Api::default_namespaced(client.clone()),
-            node_api: Node::default_namespaced(client.clone()),
-            replica_pod_api: ReplicaSet::default_namespaced(client.clone()),
-            deployment_api: Deployment::default_namespaced(client.clone()),
-            namespace,
+            // node_api: Api::default_namespaced(client.clone()),
+            replica_pod_api: Api::default_namespaced(client.clone()),
+            deployment_api: Api::default_namespaced(client.clone()),
+            objects: HashMap::new(),
+            client,
         }
     }
     fn handle_new_log_event(ev: Event) -> anyhow::Result<()> {
@@ -91,15 +91,17 @@ impl WtfScope {
     // Update the cache of pod statuses within this scope.
     // TODO this should be called on an event-watch loop and maybe either update a pod or its
     // entire scope when an event (perhaps meeting some conditions) mentions a pod.
-    pub async fn populate_deployment(&mut self, deployment_name: &String) -> Result<(), String> {
+    pub async fn populate_objects(&mut self) -> Result<(), String> {
 
         let pods = match self.pod_api.list(&Default::default()).await {
             Ok(p) => p.into_iter(),
             Err(_) => Vec::<Pod>::new().into_iter(),
         };
         for pod in pods {
-            match pod.metadata.name {
-                Some(name) => self.objects.insert(name, WtfScope::ResourceStatus {health_bit: get_health_bit(&pod).await?}),
+            match pod.metadata.name.clone() {
+                Some(name) => {
+                    self.objects.insert(name, ResourceStatus {health_bit: get_health_bit(&pod).await?})
+                },
                 None => return Err("pod has no name!".to_string())
             };
         }
