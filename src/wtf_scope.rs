@@ -1,7 +1,12 @@
+use anyhow::anyhow;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use k8s_openapi::chrono::{DateTime, Utc};
 use k8s_openapi::{Metadata, Resource};
 use pin_utils::pin_mut;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::fmt;
 
+use std::str::FromStr;
 use std::{borrow::BorrowMut, collections::HashMap};
 
 use futures::stream::TryStreamExt;
@@ -12,13 +17,26 @@ use kube::Api;
 use kube::Client;
 use tracing::info;
 
-use crate::health::{ QueryableResource, query_pod_logs, HealthBit};
+use crate::health::{query_pod_logs, HealthBit, QueryableResource};
 
 #[derive(Clone)]
 enum ResourceType {
-    Pod, 
+    Pod,
     Deployment,
     ReplicaSet,
+}
+
+impl FromStr for ResourceType {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<ResourceType, Self::Err> {
+        match input {
+            "Pod" => Ok(ResourceType::Pod),
+            "Deployment" => Ok(ResourceType::Deployment),
+            "ReplicaSet" => Ok(ResourceType::ReplicaSet),
+            _ => Err(()),
+        }
+    }
 }
 
 impl fmt::Display for ResourceType {
@@ -43,8 +61,8 @@ pub struct WtfScope {
 
 #[derive(Clone)]
 struct ResourceStatus {
-    // TODO maybe we can have a history or something here
-    health_bit: HealthBit,
+    // Timestamped history of health bits, TODO this should probably be a circular buffer
+    health_bit: Vec<(HealthBit, Time)>,
     object_type: ResourceType,
 }
 
@@ -53,7 +71,13 @@ impl fmt::Display for WtfScope {
         let mut s = String::new();
         for (object, status) in self.objects.clone() {
             s.push_str(
-                &format!("object '{}' of type {} has health bit {}", object, status.object_type, status.health_bit).to_string(),
+                &format!(
+                    "object '{}' of type {} has health bit {}",
+                    object,
+                    status.object_type,
+                    status.health_bit[status.health_bit.len() - 1].0
+                )
+                .to_string(),
             );
             s.push('\n');
         }
@@ -75,20 +99,68 @@ impl WtfScope {
             client,
         }
     }
-    fn handle_new_log_event(ev: Event) -> anyhow::Result<()> {
+
+    async fn health_bit_from_event(ev: Event) -> HealthBit {
+        match ev.type_.unwrap_or("Warning".to_string()).as_str() {
+            "Normal" => HealthBit::Green,
+            "Warning" => HealthBit::Yellow,
+            _ => HealthBit::Yellow,
+        }
+    }
+
+    async fn handle_new_log_event(&mut self, ev: Event) -> anyhow::Result<()> {
         info!(
             "Event: \"{}\" via {} {}",
             ev.message.unwrap_or("none".to_string()).trim(),
             ev.involved_object.kind.unwrap(),
             ev.involved_object.name.unwrap()
         );
-        Ok(())
+
+        let resulting_status = WtfScope::health_bit_from_event(ev).await;
+
+        let obj_type = ResourceType::from_str(&ev.involved_object.kind.unwrap()).unwrap();
+
+        match ev.involved_object.name {
+            Some(name) => match self.objects.entry(name.clone()) {
+                Occupied(entry) => {
+                    entry.into_mut().health_bit.push((
+                        resulting_status,
+                        ev.last_timestamp.unwrap_or(Time {
+                            0: DateTime::<Utc>::MIN_UTC,
+                        }),
+                    ));
+                    Ok(())
+                }
+                Vacant(entry) => {
+                    match self.objects.insert(
+                        name,
+                        ResourceStatus {
+                            health_bit: vec![(
+                                resulting_status,
+                                ev.last_timestamp.unwrap_or(Time {
+                                    0: DateTime::<Utc>::MIN_UTC,
+                                }),
+                            )],
+                            object_type: obj_type,
+                        },
+                    ) {
+                        Some(_) => Ok(()),
+                        None => Err(anyhow!(
+                            "inserting a new status history failed on {} {}, somehow",
+                            obj_type,
+                            name
+                        )),
+                    }
+                }
+            },
+            None => Err(anyhow!("warning: involved object has no name!")),
+        }
     }
 
     // Update the cache of pod statuses within this scope.
     // TODO this should be called on an event-watch loop and maybe either update a pod or its
     // entire scope when an event (perhaps meeting some conditions) mentions a pod.
-    pub async fn monitor() -> anyhow::Result<()> {
+    pub async fn monitor(&mut self) -> anyhow::Result<()> {
         //tracing_subscriber::fmt::init();
         let client = Client::try_default().await?;
 
@@ -97,7 +169,7 @@ impl WtfScope {
         let ew = watcher(events, wc).applied_objects();
         pin_mut!(ew);
         while let Some(event) = ew.try_next().await? {
-            Self::handle_new_log_event(event)?;
+            Self::handle_new_log_event(self, event);
         }
         Ok(())
     }
@@ -113,9 +185,14 @@ impl WtfScope {
                 Some(name) => self.objects.insert(
                     name,
                     ResourceStatus {
-                        health_bit: pod.get_health_bit().await?,
+                        health_bit: vec![(
+                            pod.get_health_bit().await?,
+                            Time {
+                                0: DateTime::<Utc>::MIN_UTC,
+                            },
+                        )],
                         object_type: ResourceType::Pod,
-                    }
+                    },
                 ),
                 None => return Err("pod has no name!".to_string()),
             };
@@ -130,7 +207,12 @@ impl WtfScope {
                 Some(name) => self.objects.insert(
                     name,
                     ResourceStatus {
-                        health_bit: rset.get_health_bit().await?,
+                        health_bit: vec![(
+                            rset.get_health_bit().await?,
+                            Time {
+                                0: DateTime::<Utc>::MIN_UTC,
+                            },
+                        )],
                         object_type: ResourceType::ReplicaSet,
                     },
                 ),
@@ -138,23 +220,7 @@ impl WtfScope {
             };
         }
 
-        let replica_sets = match self.deployment_api.list(&Default::default()).await {
-            Ok(p) => p.into_iter(),
-            Err(_) => Vec::<Deployment>::new().into_iter(),
-        };
-        for rset in replica_sets {
-            match rset.metadata.name.clone() {
-                Some(name) => self.objects.insert(
-                    name,
-                    ResourceStatus {
-                        health_bit: rset.get_health_bit().await?,
-                        object_type: ResourceType::Deployment,
-                    },
-                ),
-                None => return Err("pod has no name!".to_string()),
-            };
-        }
-
+        println!("TODO deployment tracking");
         Ok(())
     }
 
@@ -165,7 +231,7 @@ impl WtfScope {
         object_name: &String,
     ) -> Result<HealthBit, String> {
         match self.objects.get(object_name) {
-            Some(status) => Ok(status.health_bit),
+            Some(status) => Ok(status.health_bit[status.health_bit.len() - 1].0),
             None => Err("Object  not found!".to_string()),
         }
     }
