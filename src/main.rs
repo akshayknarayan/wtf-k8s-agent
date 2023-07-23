@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use color_eyre::Report;
 use kube::Client;
-use tokio::time;
 use wtf_scope::WtfScope;
 
 mod health;
@@ -39,22 +40,23 @@ async fn main() -> Result<(), Report> {
     */
 
     let client = Client::try_default().await?;
-    let mut scope = wtf_scope::WtfScope::new(client);
+    let scope = wtf_scope::WtfScope::new(client);
+    let objects = Arc::clone(&scope.objects);
     let t = tokio::spawn(monitor_client(scope));
     println!("bo");
 
     loop {
         println!("enter the object's id to get its status or 'exit' to exit");
         let mut line = String::new();
-
-        let b1 = std::io::stdin().read_line(&mut line).unwrap();
+        std::io::stdin().read_line(&mut line).unwrap();
         match line.as_str() {
             "exit" => break,
-            _ => match scope.get_object_health_bit(&line).await {
+            _ => match WtfScope::get_object_health_bit(Arc::clone(&objects), &line).await {
                 Ok(status) => println!("{} has most recent status {}", line, status),
                 Err(e) => println!("{}", e),
             },
         }
+        println!("input recieved");
     }
     match t.await {
         Ok(_) => {

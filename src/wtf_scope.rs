@@ -4,6 +4,8 @@ use k8s_openapi::chrono::{DateTime, Utc};
 use pin_utils::pin_mut;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::fmt;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -49,9 +51,8 @@ impl fmt::Display for ResourceType {
 }
 // TODO should a scope encompass generic resources, rather than just pods?
 // A scope of pods within a namespace, and a cache of their health bits.
-#[derive(Sync)]
 pub struct WtfScope {
-    objects: HashMap<String, ResourceStatus>,
+    pub objects: Arc<RwLock<HashMap<String, ResourceStatus>>>,
     pod_api: Api<Pod>,
     //node_api: Api<Node>,
     deployment_api: Api<Deployment>,
@@ -60,16 +61,17 @@ pub struct WtfScope {
 }
 
 #[derive(Clone)]
-struct ResourceStatus {
+pub struct ResourceStatus {
     // Timestamped history of health bits, TODO this should probably be a circular buffer
     health_bit: Vec<(HealthBit, Time)>,
     object_type: ResourceType,
 }
 
 impl fmt::Display for WtfScope {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    async fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut s = String::new();
-        for (object, status) in self.objects.clone() {
+        // TODO does this work lol
+        for (object, status) in self.objects.read().await.clone() {
             s.push_str(
                 &format!(
                     "object '{}' of type {} has health bit {}",
@@ -96,7 +98,7 @@ impl WtfScope {
             // node_api: Api::default_namespaced(client.clone()),
             replica_set_api: Api::default_namespaced(client.clone()),
             deployment_api: Api::default_namespaced(client.clone()),
-            objects: HashMap::new(),
+            objects: Arc::new(RwLock::new(HashMap::new())),
             client,
         }
     }
@@ -122,7 +124,7 @@ impl WtfScope {
         let obj_type = ResourceType::from_str(&ev.involved_object.kind.unwrap()).unwrap();
 
         match ev.involved_object.name {
-            Some(name) => match self.objects.entry(name.clone()) {
+            Some(name) => match self.objects.write().await.entry(name.clone()) {
                 Occupied(entry) => {
                     entry.into_mut().health_bit.push((
                         resulting_status,
@@ -133,7 +135,7 @@ impl WtfScope {
                     Ok(())
                 }
                 Vacant(_) => {
-                    match self.objects.insert(
+                    match self.objects.write().await.insert(
                         name.clone(),
                         ResourceStatus {
                             health_bit: vec![(
@@ -185,7 +187,7 @@ impl WtfScope {
         };
         for pod in pods {
             match pod.metadata.name.clone() {
-                Some(name) => self.objects.insert(
+                Some(name) => self.objects.write().await.insert(
                     name,
                     ResourceStatus {
                         health_bit: vec![(
@@ -207,7 +209,7 @@ impl WtfScope {
         };
         for rset in replica_sets {
             match rset.metadata.name.clone() {
-                Some(name) => self.objects.insert(
+                Some(name) => self.objects.write().await.insert(
                     name,
                     ResourceStatus {
                         health_bit: vec![(
@@ -230,10 +232,10 @@ impl WtfScope {
     // Query the state of an object within this scope.
     // This result may be stale, and is likely to be so if the event watch loop is not running.
     pub async fn get_object_health_bit(
-        &mut self,
+        objects: Arc<RwLock<HashMap<String, ResourceStatus>>>,
         object_name: &String,
     ) -> Result<HealthBit, String> {
-        match self.objects.get(object_name) {
+        match objects.read().await.get(object_name) {
             Some(status) => Ok(status.health_bit[status.health_bit.len() - 1].0),
             None => Err("Object  not found!".to_string()),
         }
