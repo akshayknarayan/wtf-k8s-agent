@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use futures::executor::block_on;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::chrono::{DateTime, Utc};
 use pin_utils::pin_mut;
@@ -68,10 +69,11 @@ pub struct ResourceStatus {
 }
 
 impl fmt::Display for WtfScope {
-    async fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         let mut s = String::new();
         // TODO does this work lol
-        for (object, status) in self.objects.read().await.clone() {
+        let objects = block_on(self.objects.read());
+        for (object, status) in objects.clone() {
             s.push_str(
                 &format!(
                     "object '{}' of type {} has health bit {}",
@@ -237,7 +239,7 @@ impl WtfScope {
     ) -> Result<HealthBit, String> {
         match objects.read().await.get(object_name) {
             Some(status) => Ok(status.health_bit[status.health_bit.len() - 1].0),
-            None => Err("Object  not found!".to_string()),
+            None => Err(format!("Object {} not found!", object_name)),
         }
     }
 }
