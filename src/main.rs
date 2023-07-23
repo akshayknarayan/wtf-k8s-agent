@@ -42,29 +42,23 @@ async fn main() -> Result<(), Report> {
     let client = Client::try_default().await?;
     let scope = wtf_scope::WtfScope::new(client);
     let objects = Arc::clone(&scope.objects);
-    let t = tokio::spawn(monitor_client(scope));
-    println!("bo");
+    tokio::spawn(monitor_client(scope));
 
     loop {
         println!("enter the object's id to get its status or 'exit' to exit");
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).unwrap();
-        match line.as_str() {
-            "exit" => break,
-            _ => match WtfScope::get_object_health_bit(Arc::clone(&objects), &line).await {
-                Ok(status) => println!("{} has most recent status {}", line, status),
+        match line.as_str().trim() {
+            "exit" => {println!("exiting!"); break},
+            object_name => match WtfScope::get_object_health_bit(Arc::clone(&objects), &object_name.to_string()).await {
+                Ok(status) => println!("{} has most recent status {}", object_name, status),
                 Err(e) => println!("{}", e),
             },
         }
-        println!("input recieved");
+        println!("")
     }
-    match t.await {
-        Ok(_) => {
-            println!("amogu");
-            Ok(())
-        }
-        Err(e) => Err(Report::new(e)),
-    }
+
+    Ok(())
 }
 async fn monitor_client(mut scope: WtfScope) {
     match scope.populate_objects().await {
