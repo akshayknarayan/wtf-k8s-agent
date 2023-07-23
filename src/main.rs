@@ -1,15 +1,20 @@
 use color_eyre::Report;
-use k8s_openapi::api::core::v1::Pod;
-use kube::{api::Api, Client};
+use kube::Client;
+use tokio::time;
+use wtf_scope::WtfScope;
 
 mod health;
 // TODO scope doesn't compile, don't really know how to fix the hashmap in-place iteration (over keys) & update
 mod wtf_scope;
 
-fn main() -> Result<(), Report> {
+#[tokio::main]
+async fn main() -> Result<(), Report> {
     color_eyre::install()?;
     tracing_subscriber::fmt::init();
 
+    // TODO figure out how this works
+    // until then, just gonna spawn (green, I think) thread for monitoring
+    /*
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -17,12 +22,13 @@ fn main() -> Result<(), Report> {
     rt.block_on(async move {
         let client = Client::try_default().await?;
 
-
         let mut a = wtf_scope::WtfScope::new(client);
         match a.populate_objects().await {
             Ok(_) => println!("{}", a),
-            Err(e) => println!("error {}", e)
-        } ;
+            Err(e) => println!("error {}", e),
+        };
+
+
 
 
         //let evs = events.list(&Default::default()).await?;
@@ -30,4 +36,41 @@ fn main() -> Result<(), Report> {
 
         Ok(())
     })
+    */
+
+    let client = Client::try_default().await?;
+    let mut scope = wtf_scope::WtfScope::new(client);
+    let t = tokio::spawn(monitor_client(scope));
+    println!("bo");
+
+    loop {
+        println!("enter the object's id to get its status or 'exit' to exit");
+        let mut line = String::new();
+
+        let b1 = std::io::stdin().read_line(&mut line).unwrap();
+        match line.as_str() {
+            "exit" => break,
+            _ => match scope.get_object_health_bit(&line).await {
+                Ok(status) => println!("{} has most recent status {}", line, status),
+                Err(e) => println!("{}", e),
+            },
+        }
+    }
+    match t.await {
+        Ok(_) => {
+            println!("amogu");
+            Ok(())
+        }
+        Err(e) => Err(Report::new(e)),
+    }
+}
+async fn monitor_client(mut scope: WtfScope) {
+    match scope.populate_objects().await {
+        Ok(_) => println!("{}", scope),
+        Err(e) => println!("error {}", e),
+    };
+    match scope.monitor().await {
+        Ok(_) => println!("{}", scope),
+        Err(e) => println!("error {}", e),
+    };
 }
