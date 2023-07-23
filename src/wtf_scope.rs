@@ -1,23 +1,22 @@
 use anyhow::anyhow;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::chrono::{DateTime, Utc};
-use k8s_openapi::{Metadata, Resource};
 use pin_utils::pin_mut;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::fmt;
 
+use std::collections::HashMap;
 use std::str::FromStr;
-use std::{borrow::BorrowMut, collections::HashMap};
 
 use futures::stream::TryStreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
-use k8s_openapi::api::core::v1::{Event, Node, Pod, ReadServiceResponse};
+use k8s_openapi::api::core::v1::{Event, Pod};
 use kube::runtime::{watcher, WatchStreamExt};
 use kube::Api;
 use kube::Client;
 use tracing::info;
 
-use crate::health::{query_pod_logs, HealthBit, QueryableResource};
+use crate::health::{HealthBit, QueryableResource};
 
 #[derive(Clone)]
 enum ResourceType {
@@ -50,6 +49,7 @@ impl fmt::Display for ResourceType {
 }
 // TODO should a scope encompass generic resources, rather than just pods?
 // A scope of pods within a namespace, and a cache of their health bits.
+#[derive(Sync)]
 pub struct WtfScope {
     objects: HashMap<String, ResourceStatus>,
     pod_api: Api<Pod>,
@@ -84,6 +84,7 @@ impl fmt::Display for WtfScope {
         write!(f, "{}", s)
     }
 }
+
 // havign a hard time figuring out a nice way to do this. Where are centralized lists like we can
 // get in kubectl describe? everything except pods can only be queried with a name and a namespace
 // need to populate objects before we can query them
@@ -100,8 +101,8 @@ impl WtfScope {
         }
     }
 
-    async fn health_bit_from_event(ev: Event) -> HealthBit {
-        match ev.type_.unwrap_or("Warning".to_string()).as_str() {
+    async fn health_bit_from_event(ev: &Event) -> HealthBit {
+        match ev.type_.as_ref().unwrap_or(&"Warning".to_string()).as_str() {
             "Normal" => HealthBit::Green,
             "Warning" => HealthBit::Yellow,
             _ => HealthBit::Yellow,
@@ -111,12 +112,12 @@ impl WtfScope {
     async fn handle_new_log_event(&mut self, ev: Event) -> anyhow::Result<()> {
         info!(
             "Event: \"{}\" via {} {}",
-            ev.message.unwrap_or("none".to_string()).trim(),
-            ev.involved_object.kind.unwrap(),
-            ev.involved_object.name.unwrap()
+            ev.message.as_ref().unwrap_or(&"none".to_string()).trim(),
+            ev.involved_object.kind.as_ref().unwrap(),
+            ev.involved_object.name.as_ref().unwrap()
         );
 
-        let resulting_status = WtfScope::health_bit_from_event(ev).await;
+        let resulting_status = WtfScope::health_bit_from_event(&ev).await;
 
         let obj_type = ResourceType::from_str(&ev.involved_object.kind.unwrap()).unwrap();
 
@@ -131,17 +132,19 @@ impl WtfScope {
                     ));
                     Ok(())
                 }
-                Vacant(entry) => {
+                Vacant(_) => {
                     match self.objects.insert(
-                        name,
+                        name.clone(),
                         ResourceStatus {
                             health_bit: vec![(
                                 resulting_status,
-                                ev.last_timestamp.unwrap_or(Time {
-                                    0: DateTime::<Utc>::MIN_UTC,
-                                }),
+                                ev.last_timestamp
+                                    .unwrap_or(Time {
+                                        0: DateTime::<Utc>::MIN_UTC,
+                                    })
+                                    .clone(),
                             )],
-                            object_type: obj_type,
+                            object_type: obj_type.clone(),
                         },
                     ) {
                         Some(_) => Ok(()),
@@ -169,7 +172,7 @@ impl WtfScope {
         let ew = watcher(events, wc).applied_objects();
         pin_mut!(ew);
         while let Some(event) = ew.try_next().await? {
-            Self::handle_new_log_event(self, event);
+            Self::handle_new_log_event(self, event).await;
         }
         Ok(())
     }

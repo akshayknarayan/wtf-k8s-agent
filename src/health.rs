@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use k8s_openapi::api::{apps::v1::{ReplicaSet, Deployment}, core::v1::Pod};
-use kube::api::{Api, LogParams};
 use std::fmt;
 
 #[derive(Clone, Copy)]
@@ -47,14 +46,6 @@ impl fmt::Display for SimplePodStatus {
     }
 }
 
-// TODO regex these, maybe to determine ERRORs?
-pub async fn query_pod_logs(pods: &Api<Pod>, pod_name: &String) -> Result<(), String> {
-    println!(
-        "{:?}",
-        pods.logs(pod_name, &LogParams::default()).await.unwrap()
-    );
-    Ok(())
-}
 
 // Get and map a pod's status to a health bit.
 // TODO this function should porbably map podstatus-> healthbit and
