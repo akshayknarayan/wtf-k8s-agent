@@ -95,6 +95,7 @@ impl fmt::Display for WtfScope {
 
 impl WtfScope {
     pub fn new(client: Client) -> Self {
+        // TODO call populate_objects here
         Self {
             pod_api: Api::default_namespaced(client.clone()),
             // node_api: Api::default_namespaced(client.clone()),
