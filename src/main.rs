@@ -48,6 +48,8 @@ async fn main() -> Result<(), Report> {
         println!("enter the object's id to get its status or 'exit' to exit");
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).unwrap();
+        // I think the lock gets taken by the monitor service when we write a lock and never gets
+        // released?
         match line.as_str().trim() {
             "exit" => {println!("exiting!"); break},
             object_name => match WtfScope::get_object_health_bit(Arc::clone(&objects), &object_name.to_string()).await {
