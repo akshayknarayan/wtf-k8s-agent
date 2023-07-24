@@ -126,9 +126,11 @@ impl WtfScope {
 
         let obj_type = ResourceType::from_str(&ev.involved_object.kind.unwrap()).unwrap();
 
+        println!("updating status...");
         match ev.involved_object.name {
             Some(name) => match self.objects.write().await.entry(name.clone()) {
                 Occupied(entry) => {
+                    println!("updating status for pod {}", name);
                     entry.into_mut().health_bit.push((
                         resulting_status,
                         ev.last_timestamp.unwrap_or(Time {
@@ -137,9 +139,8 @@ impl WtfScope {
                     ));
                     Ok(())
                 }
-                Vacant(_) => {
-                    match self.objects.write().await.insert(
-                        name.clone(),
+                Vacant(entry) => {
+                    entry.insert(
                         ResourceStatus {
                             health_bit: vec![(
                                 resulting_status,
@@ -150,15 +151,8 @@ impl WtfScope {
                                     .clone(),
                             )],
                             object_type: obj_type.clone(),
-                        },
-                    ) {
-                        Some(_) => Ok(()),
-                        None => Err(anyhow!(
-                            "inserting a new status history failed on {} {}, somehow",
-                            obj_type,
-                            name
-                        )),
-                    }
+                        }); 
+                    Ok(())
                 }
             },
             None => Err(anyhow!("warning: involved object has no name!")),
@@ -177,6 +171,7 @@ impl WtfScope {
         let ew = watcher(events, wc).applied_objects();
         pin_mut!(ew);
         while let Some(event) = ew.try_next().await? {
+            println!("handling new log event");
             Self::handle_new_log_event(self, event).await;
         }
         Ok(())
