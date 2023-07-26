@@ -3,6 +3,7 @@ use futures::executor::block_on;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::chrono::{DateTime, Utc};
 use pin_utils::pin_mut;
+use regex::Regex;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::fmt;
 use std::sync::Arc;
@@ -114,6 +115,43 @@ impl WtfScope {
         }
     }
 
+    async fn update_pod_bit(
+        &mut self,
+        object_name: String,
+        bit: HealthBit,
+        timestamp: Time,
+        object_type: ResourceType,
+    ) -> Result<(), String> {
+        println!("updating status...");
+        match self.objects.write().await.entry(object_name.clone()) {
+            Occupied(entry) => {
+                println!("updating status for pod {}", object_name);
+                entry.into_mut().health_bit.push((bit, timestamp));
+                Ok(())
+            }
+            Vacant(entry) => {
+                entry.insert(ResourceStatus {
+                    health_bit: vec![(bit, timestamp)],
+                    object_type: object_type,
+                });
+                Ok(())
+            }
+        }
+    }
+    async fn handle_log_msg(&mut self, msg: &str) -> anyhow::Result<()> {
+        let pod_deleted_pattern = r"Deleted pod: (\S*)";
+        let regex = Regex::new(pod_deleted_pattern).unwrap();
+
+        if let Some(captures) = regex.captures(msg.as_ref()) {
+            let pod_to_delete = captures.get(1).unwrap().as_str();
+            match self.objects.write().await.remove(pod_to_delete) { 
+                Some(d) => println!("deleted pod {}", pod_to_delete),
+                None => println!("no pod {} to delete!", pod_to_delete)
+            };
+        }
+        Ok(())
+    }
+
     async fn handle_new_log_event(&mut self, ev: Event) -> anyhow::Result<()> {
         info!(
             "Event: \"{}\" via {} {}",
@@ -126,37 +164,30 @@ impl WtfScope {
 
         let obj_type = ResourceType::from_str(&ev.involved_object.kind.unwrap()).unwrap();
 
-        println!("updating status...");
+        self.handle_log_msg(ev.message.as_ref().unwrap_or(&"none".to_string()).trim()).await?;
+
         match ev.involved_object.name {
-            Some(name) => match self.objects.write().await.entry(name.clone()) {
-                Occupied(entry) => {
-                    println!("updating status for pod {}", name);
-                    entry.into_mut().health_bit.push((
+            Some(name) => {
+                match self
+                    .update_pod_bit(
+                        name,
                         resulting_status,
                         ev.last_timestamp.unwrap_or(Time {
                             0: DateTime::<Utc>::MIN_UTC,
                         }),
-                    ));
-                    Ok(())
+                        obj_type,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(anyhow!(e)),
                 }
-                Vacant(entry) => {
-                    entry.insert(
-                        ResourceStatus {
-                            health_bit: vec![(
-                                resulting_status,
-                                ev.last_timestamp
-                                    .unwrap_or(Time {
-                                        0: DateTime::<Utc>::MIN_UTC,
-                                    })
-                                    .clone(),
-                            )],
-                            object_type: obj_type.clone(),
-                        }); 
-                    Ok(())
-                }
-            },
+            }
+
             None => Err(anyhow!("warning: involved object has no name!")),
         }
+
+        // Deleted pod: (\S*)
     }
 
     // Update the cache of pod statuses within this scope.
@@ -171,8 +202,10 @@ impl WtfScope {
         let ew = watcher(events, wc).applied_objects();
         pin_mut!(ew);
         while let Some(event) = ew.try_next().await? {
-            println!("handling new log event");
-            Self::handle_new_log_event(self, event).await;
+            match Self::handle_new_log_event(self, event).await {
+                Ok(_) => (),
+                Err(e) => println!("error handling log event: {}", e),
+            };
         }
         Ok(())
     }
@@ -183,6 +216,8 @@ impl WtfScope {
             Ok(p) => p.into_iter(),
             Err(_) => Vec::<Pod>::new().into_iter(),
         };
+        // TODO figure out how to pinky promise to the compiler that the methods we call are available on
+        // both Api template specilizations so we can not duplicate this code
         for pod in pods {
             match pod.metadata.name.clone() {
                 Some(name) => self.objects.write().await.insert(
@@ -235,7 +270,7 @@ impl WtfScope {
     ) -> Result<HealthBit, String> {
         match objects.read().await.get(object_name) {
             Some(status) => Ok(status.health_bit[status.health_bit.len() - 1].0),
-            None => Err(format!("Object {} not found!", object_name)),
+            None => Err(format!("Object '{}' not found!", object_name)),
         }
     }
 }
