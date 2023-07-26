@@ -53,7 +53,7 @@ async fn main() -> Result<(), Report> {
         match line.as_str().trim() {
             "exit" => {println!("exiting!"); break},
             object_name => match WtfScope::get_object_health_bit(Arc::clone(&objects), &object_name.to_string()).await {
-                Ok(status) => println!("{} has most recent status {}", object_name, status),
+                Ok(status) => println!("{} has most recent status {}, updated at timestamp {:?}", object_name, status.0, status.1),
                 Err(e) => println!("{}", e),
             },
         }

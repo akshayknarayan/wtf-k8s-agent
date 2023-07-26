@@ -117,13 +117,13 @@ impl WtfScope {
 
     async fn update_pod_bit(
         &mut self,
-        object_name: String,
+        object_name: &str,
         bit: HealthBit,
         timestamp: Time,
-        object_type: ResourceType,
+        object_type: Option<ResourceType>,
     ) -> Result<(), String> {
         println!("updating status...");
-        match self.objects.write().await.entry(object_name.clone()) {
+        match self.objects.write().await.entry(object_name.to_string()) {
             Occupied(entry) => {
                 println!("updating status for pod {}", object_name);
                 entry.into_mut().health_bit.push((bit, timestamp));
@@ -132,24 +132,27 @@ impl WtfScope {
             Vacant(entry) => {
                 entry.insert(ResourceStatus {
                     health_bit: vec![(bit, timestamp)],
-                    object_type: object_type,
+                    object_type: object_type.unwrap(),
                 });
                 Ok(())
             }
         }
     }
-    async fn handle_log_msg(&mut self, msg: &str) -> anyhow::Result<()> {
-        let pod_deleted_pattern = r"Deleted pod: (\S*)";
+    async fn handle_log_msg(&mut self, msg: &str, timestamp: Time) -> anyhow::Result<()> {
+        let pod_deleted_pattern = r"Deleted pod: (\S*)"; // I think setting to red here (when
+        // deleted) is better than deleting bc else we might query in the future and be like
+        // where'd it go
         let regex = Regex::new(pod_deleted_pattern).unwrap();
 
         if let Some(captures) = regex.captures(msg.as_ref()) {
             let pod_to_delete = captures.get(1).unwrap().as_str();
-            match self.objects.write().await.remove(pod_to_delete) { 
-                Some(d) => println!("deleted pod {}", pod_to_delete),
-                None => println!("no pod {} to delete!", pod_to_delete)
-            };
-        }
+            match self.update_pod_bit(pod_to_delete, HealthBit::Red, timestamp, None).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(anyhow!("problem updating pod bit: {}", e)),
+            }
+        } else {
         Ok(())
+        }
     }
 
     async fn handle_new_log_event(&mut self, ev: Event) -> anyhow::Result<()> {
@@ -164,18 +167,20 @@ impl WtfScope {
 
         let obj_type = ResourceType::from_str(&ev.involved_object.kind.unwrap()).unwrap();
 
-        self.handle_log_msg(ev.message.as_ref().unwrap_or(&"none".to_string()).trim()).await?;
+        let timestamp = ev.last_timestamp.unwrap_or(Time {
+                            0: DateTime::<Utc>::MIN_UTC,
+                        });
+
+        self.handle_log_msg(ev.message.as_ref().unwrap_or(&"none".to_string()).trim(), timestamp.clone()).await?;
 
         match ev.involved_object.name {
             Some(name) => {
                 match self
                     .update_pod_bit(
-                        name,
+                        name.as_ref(),
                         resulting_status,
-                        ev.last_timestamp.unwrap_or(Time {
-                            0: DateTime::<Utc>::MIN_UTC,
-                        }),
-                        obj_type,
+                        timestamp,
+                        Some(obj_type),
                     )
                     .await
                 {
@@ -267,9 +272,9 @@ impl WtfScope {
     pub async fn get_object_health_bit(
         objects: Arc<RwLock<HashMap<String, ResourceStatus>>>,
         object_name: &String,
-    ) -> Result<HealthBit, String> {
+    ) -> Result<(HealthBit, Time), String> {
         match objects.read().await.get(object_name) {
-            Some(status) => Ok(status.health_bit[status.health_bit.len() - 1].0),
+            Some(status) => Ok(status.health_bit[status.health_bit.len() - 1].clone()),
             None => Err(format!("Object '{}' not found!", object_name)),
         }
     }
