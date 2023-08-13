@@ -27,6 +27,7 @@ enum ResourceType {
     Pod,
     Deployment,
     ReplicaSet,
+    Unknown,
 }
 
 impl FromStr for ResourceType {
@@ -37,7 +38,7 @@ impl FromStr for ResourceType {
             "Pod" => Ok(ResourceType::Pod),
             "Deployment" => Ok(ResourceType::Deployment),
             "ReplicaSet" => Ok(ResourceType::ReplicaSet),
-            _ => Err(()),
+            _ => Ok(ResourceType::Unknown),
         }
     }
 }
@@ -48,6 +49,7 @@ impl fmt::Display for ResourceType {
             ResourceType::Pod => write!(f, "Pod"),
             ResourceType::Deployment => write!(f, "Deployment"),
             ResourceType::ReplicaSet => write!(f, "ReplicaSet"),
+            ResourceType::Unknown=> write!(f, "Unknown"),
         }
     }
 }
@@ -140,18 +142,21 @@ impl WtfScope {
     }
     async fn handle_log_msg(&mut self, msg: &str, timestamp: Time) -> anyhow::Result<()> {
         let pod_deleted_pattern = r"Deleted pod: (\S*)"; // I think setting to red here (when
-        // deleted) is better than deleting bc else we might query in the future and be like
-        // where'd it go
+                                                         // deleted) is better than deleting bc else we might query in the future and be like
+                                                         // where'd it go
         let regex = Regex::new(pod_deleted_pattern).unwrap();
 
         if let Some(captures) = regex.captures(msg.as_ref()) {
             let pod_to_delete = captures.get(1).unwrap().as_str();
-            match self.update_pod_bit(pod_to_delete, HealthBit::Red, timestamp, None).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(anyhow!("problem updating pod bit: {}", e)),
+            match self
+                .update_pod_bit(pod_to_delete, HealthBit::Red, timestamp, None)
+                .await
+            {
+                Ok(_) => Ok(()),
+                Err(e) => Err(anyhow!("problem updating pod bit: {}", e)),
             }
         } else {
-        Ok(())
+            Ok(())
         }
     }
 
@@ -165,23 +170,25 @@ impl WtfScope {
 
         let resulting_status = WtfScope::health_bit_from_event(&ev).await;
 
-        let obj_type = ResourceType::from_str(&ev.involved_object.kind.unwrap()).unwrap();
+        let obj_type = match &ev.involved_object.kind {
+            Some(ty) => ResourceType::from_str(ty).unwrap(),
+            None => ResourceType::Unknown,
+        };
 
         let timestamp = ev.last_timestamp.unwrap_or(Time {
-                            0: DateTime::<Utc>::MIN_UTC,
-                        });
+            0: DateTime::<Utc>::MIN_UTC,
+        });
 
-        self.handle_log_msg(ev.message.as_ref().unwrap_or(&"none".to_string()).trim(), timestamp.clone()).await?;
+        self.handle_log_msg(
+            ev.message.as_ref().unwrap_or(&"none".to_string()).trim(),
+            timestamp.clone(),
+        )
+        .await?;
 
         match ev.involved_object.name {
             Some(name) => {
                 match self
-                    .update_pod_bit(
-                        name.as_ref(),
-                        resulting_status,
-                        timestamp,
-                        Some(obj_type),
-                    )
+                    .update_pod_bit(name.as_ref(), resulting_status, timestamp, Some(obj_type))
                     .await
                 {
                     Ok(_) => Ok(()),
