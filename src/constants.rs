@@ -9,6 +9,7 @@ lazy_static! {
 
     pub static ref log_mapping: Arc<RwLock<HashMap<String, HealthBit>>> = {
         let map = Arc::new(RwLock::new(HashMap::new()));
+        block_on(map.write()).insert(r"Stopping Container .*".to_string(), HealthBit::Red); // I think setting to red here (when
         block_on(map.write()).insert(r"Deleted pod: (\S*)".to_string(), HealthBit::Red); // I think setting to red here (when
                                                          // deleted) is better than deleting bc else we might query in the future and be like
                                                          // where'd it go
