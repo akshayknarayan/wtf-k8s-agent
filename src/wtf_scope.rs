@@ -20,6 +20,7 @@ use kube::Api;
 use kube::Client;
 use tracing::info;
 
+use crate::constants;
 use crate::health::{HealthBit, QueryableResource};
 
 #[derive(Clone)]
@@ -49,10 +50,11 @@ impl fmt::Display for ResourceType {
             ResourceType::Pod => write!(f, "Pod"),
             ResourceType::Deployment => write!(f, "Deployment"),
             ResourceType::ReplicaSet => write!(f, "ReplicaSet"),
-            ResourceType::Unknown=> write!(f, "Unknown"),
+            ResourceType::Unknown => write!(f, "Unknown"),
         }
     }
 }
+
 // TODO should a scope encompass generic resources, rather than just pods?
 // A scope of pods within a namespace, and a cache of their health bits.
 pub struct WtfScope {
@@ -122,7 +124,7 @@ impl WtfScope {
         object_name: &str,
         bit: HealthBit,
         timestamp: Time,
-        object_type: Option<ResourceType>,
+        object_type: ResourceType,
     ) -> Result<(), String> {
         println!("updating status...");
         match self.objects.write().await.entry(object_name.to_string()) {
@@ -134,30 +136,47 @@ impl WtfScope {
             Vacant(entry) => {
                 entry.insert(ResourceStatus {
                     health_bit: vec![(bit, timestamp)],
-                    object_type: object_type.unwrap(),
+                    object_type: object_type,
                 });
                 Ok(())
             }
         }
     }
-    async fn handle_log_msg(&mut self, msg: &str, timestamp: Time) -> anyhow::Result<()> {
-        let pod_deleted_pattern = r"Deleted pod: (\S*)"; // I think setting to red here (when
-                                                         // deleted) is better than deleting bc else we might query in the future and be like
-                                                         // where'd it go
-        let regex = Regex::new(pod_deleted_pattern).unwrap();
 
-        if let Some(captures) = regex.captures(msg.as_ref()) {
-            let pod_to_delete = captures.get(1).unwrap().as_str();
-            match self
-                .update_pod_bit(pod_to_delete, HealthBit::Red, timestamp, None)
-                .await
-            {
-                Ok(_) => Ok(()),
-                Err(e) => Err(anyhow!("problem updating pod bit: {}", e)),
-            }
-        } else {
-            Ok(())
+    async fn handle_log_msg(
+        &mut self,
+        msg: &str,
+        involved_object_name: &str,
+        involved_object_type: ResourceType,
+        timestamp: Time,
+    ) -> anyhow::Result<()> {
+        for (pattern, _bit) in constants::log_mapping.read().await.clone() {
+            let regex = Regex::new(pattern.as_ref()).unwrap();
+
+            if let Some(captures) = regex.captures(msg.as_ref()) {
+                let object_name = match captures.get(1) {
+                    Some(referenced_pod) => referenced_pod.as_str(),
+                    None => involved_object_name,
+                };
+                let object_type = match captures.get(2) {
+                    Some(ty) => ResourceType::from_str(ty.as_str()).unwrap(),
+                    None => {
+                        assert!(object_name == involved_object_name);
+                        involved_object_type.clone()
+                    }
+                };
+                match self
+                    .update_pod_bit(object_name, HealthBit::Red, timestamp.clone(), object_type)
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(anyhow!("problem updating pod bit: {}", e)),
+                }
+            } else {
+                Ok(())
+            };
         }
+        Ok(())
     }
 
     async fn handle_new_log_event(&mut self, ev: Event) -> anyhow::Result<()> {
@@ -181,6 +200,11 @@ impl WtfScope {
 
         self.handle_log_msg(
             ev.message.as_ref().unwrap_or(&"none".to_string()).trim(),
+            ev.involved_object
+                .name
+                .as_ref()
+                .unwrap_or(&"NO INVOLVED OBJECT".to_string()),
+                obj_type.clone(),
             timestamp.clone(),
         )
         .await?;
@@ -188,7 +212,7 @@ impl WtfScope {
         match ev.involved_object.name {
             Some(name) => {
                 match self
-                    .update_pod_bit(name.as_ref(), resulting_status, timestamp, Some(obj_type))
+                    .update_pod_bit(name.as_ref(), resulting_status, timestamp, obj_type)
                     .await
                 {
                     Ok(_) => Ok(()),

@@ -5,6 +5,7 @@ use kube::Client;
 use wtf_scope::WtfScope;
 
 mod health;
+mod constants;
 // TODO scope doesn't compile, don't really know how to fix the hashmap in-place iteration (over keys) & update
 mod wtf_scope;
 
