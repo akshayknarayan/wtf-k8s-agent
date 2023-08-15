@@ -128,7 +128,7 @@ impl WtfScope {
     ) -> Result<(), String> {
         match self.objects.write().await.entry(object_name.to_string()) {
             Occupied(entry) => {
-                println!("updating status for pod {}", object_name);
+                println!("updating object {} to status {}", object_name, bit);
                 entry.into_mut().health_bit.push((bit, timestamp));
                 Ok(())
             }
@@ -164,27 +164,28 @@ impl WtfScope {
                         involved_object_type.clone()
                     }
                 };
+                println!("matched regex {}, setting {} to {}", pattern, object_name, _bit);
                 match self
-                    .update_pod_bit(object_name, HealthBit::Red, timestamp.clone(), object_type)
+                    .update_pod_bit(object_name, _bit, timestamp.clone(), object_type)
                     .await
                 {
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(anyhow!("problem updating pod bit: {}", e)),
+                    Ok(_) => return Ok(()),
+                    Err(e) => return Err(anyhow!("problem updating pod bit: {}", e)),
                 }
-            } else {
-                Ok(())
             };
         }
         Ok(())
     }
 
     async fn handle_new_log_event(&mut self, ev: Event) -> anyhow::Result<()> {
+        /*
         info!(
             "Event: \"{}\" via {} {}",
             ev.message.as_ref().unwrap_or(&"none".to_string()).trim(),
             ev.involved_object.kind.as_ref().unwrap(),
             ev.involved_object.name.as_ref().unwrap()
         );
+        */
 
         let resulting_status = WtfScope::health_bit_from_event(&ev).await;
 
