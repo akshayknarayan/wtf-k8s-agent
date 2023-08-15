@@ -14,36 +14,12 @@ async fn main() -> Result<(), Report> {
     color_eyre::install()?;
     tracing_subscriber::fmt::init();
 
-    // TODO figure out how this works
-    // until then, just gonna spawn (green, I think) thread for monitoring
-    /*
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
-    rt.block_on(async move {
-        let client = Client::try_default().await?;
-
-        let mut a = wtf_scope::WtfScope::new(client);
-        match a.populate_objects().await {
-            Ok(_) => println!("{}", a),
-            Err(e) => println!("error {}", e),
-        };
-
-
-
-
-        //let evs = events.list(&Default::default()).await?;
-        //info!(?evs, "events");
-
-        Ok(())
-    })
-    */
-
     let client = Client::try_default().await?;
     let scope = wtf_scope::WtfScope::new(client);
     let objects = Arc::clone(&scope.objects);
     tokio::spawn(monitor_client(scope));
+
+    // TODO figure out why the minikube container deadlocks after quitting this app
 
     loop {
         println!("enter the object's id to get its status or 'exit' to exit");

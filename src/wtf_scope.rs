@@ -126,7 +126,6 @@ impl WtfScope {
         timestamp: Time,
         object_type: ResourceType,
     ) -> Result<(), String> {
-        println!("updating status...");
         match self.objects.write().await.entry(object_name.to_string()) {
             Occupied(entry) => {
                 println!("updating status for pod {}", object_name);
